@@ -14,17 +14,33 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
 
     @IBOutlet var cameraImageView: UIImageView!
 
+    @IBOutlet weak var captureFrontImageView: UIImageView!
+    @IBOutlet weak var captureBackImageView: UIImageView!
     
     var internals: [[String: AnyObject?]] = []
     
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        
+    var capturedImage: UIImage?
+    
+    var captureSession: AVCaptureSession?
+    
+    var input: AVCaptureDeviceInput?
+    var output: AVCaptureVideoDataOutput?
+    
+    enum SessionInput {
+        case front
+        case back
+    }
+    
+    var state: SessionInput = .front
+    
+    func reloadState() {
         let devices = AVCaptureDevice.devices(for: AVMediaType.video)
         
         for device in devices {
-            switch device.position {
-            case .back:
+            if (device.position == .back && self.state == .back) ||
+                (device.position == .front && self.state == .front)
+            {
+                
                 self.internals.append(
                     setupCamera(
                         for: device,
@@ -36,75 +52,125 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
                         )
                     )
                 )
-                
-            case .front:
-                self.internals.append(
-                    setupCamera(
-                        for: device,
-                        withFrame: CGRect.init(
-                            x: 100,
-                            y: 0,
-                            width: 100,
-                            height: 100
-                        )
-                    )
-                )
-                
-            default: break
+            }
+        }
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        reloadState()
+        
+        self.setupTimer()
+        
+    }
+    
+    func setupTimer() {
+        Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { timer in
+            
+            DispatchQueue.main.async {
+                switch self.state {
+                case .back:
+                    self.captureBackImageView.image = self.capturedImage
+                case .front:
+                    self.captureFrontImageView.image = self.capturedImage
+                }
             }
         }
         
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+            switch self.state {
+            case .back:
+                self.state = .front
+            case .front:
+                self.state = .back
+            }
+            
+            self.reloadState()
+        }
     }
 
     func setupCamera(for device: AVCaptureDevice, withFrame frame: CGRect)
         -> [String: AnyObject?]
     {
-        var input: AVCaptureDeviceInput?
-        var output: AVCaptureVideoDataOutput?
-        var captureSession: AVCaptureSession?
+        self.internals = []
+        
         var previewLayer: AVCaptureVideoPreviewLayer?
         
-      
-        input = try? AVCaptureDeviceInput.init(device: device)
-        var outputInt = AVCaptureVideoDataOutput.init()
-        outputInt.alwaysDiscardsLateVideoFrames = true
-        
-        output = outputInt
-        
-        
-        if let output = output {
-            output.setSampleBufferDelegate(
-                self,
-                queue: DispatchQueue.init(label: "cameraQueue")
-            )
-            
-            var videoSettings
-                = [kCVPixelBufferPixelFormatTypeKey as String : kCVPixelFormatType_32BGRA]
-            output.videoSettings = videoSettings
-        }
-        
-        if let input = input,
-            let output = output
+        self.input = try? AVCaptureDeviceInput.init(device: device)
+    
+        if let input = self.input
         {
-            let captureSessionInt = AVCaptureSession.init()
-            captureSessionInt.addInput(input)
-            captureSessionInt.addOutput(output)
-            captureSessionInt.canSetSessionPreset(AVCaptureSession.Preset.photo)
-            captureSession = captureSessionInt
+            let captureSessionInt: AVCaptureSession!
+            if self.captureSession == nil {
+                captureSessionInt = AVCaptureSession.init()
+                self.captureSession = captureSessionInt
+                if captureSessionInt.canSetSessionPreset(AVCaptureSession.Preset.photo) {
+                    captureSessionInt.sessionPreset = AVCaptureSession.Preset.photo
+                }
+            } else {
+                captureSessionInt = self.captureSession!
+                for i : AVCaptureDeviceInput in (captureSessionInt.inputs as! [AVCaptureDeviceInput]){
+                    self.captureSession?.removeInput(i)
+                }
+                
+                self.input = nil
+                
+                for i : AVCaptureOutput in (captureSessionInt.outputs as! [AVCaptureOutput]){
+                    self.captureSession?.removeOutput(i)
+                }
+                
+                self.output = nil
+            }
+            
+            if captureSessionInt.canAddInput(input) {
+                captureSessionInt.addInput(input)
+            }
+            
+            var outputInt = AVCaptureVideoDataOutput.init()
+            outputInt.alwaysDiscardsLateVideoFrames = true
+            
+            self.output = outputInt
+            
+            if let output = self.output {
+                output.setSampleBufferDelegate(
+                    self,
+                    queue: DispatchQueue.init(label: "cameraQueue")
+                )
+                
+                var videoSettings
+                    = [kCVPixelBufferPixelFormatTypeKey as String : kCVPixelFormatType_32BGRA]
+                output.videoSettings = videoSettings
+                
+                if captureSessionInt.canAddOutput(output) {
+                    captureSessionInt.addOutput(output)
+                }
+            }
+            
         }
         
         if let captureSession = captureSession {
-            var previewLayerInt =  AVCaptureVideoPreviewLayer.init(session: captureSession)
+            var previewLayerInt: AVCaptureVideoPreviewLayer!
+            if let previewLayer = self.previewLayer {
+                previewLayerInt = previewLayer
+                previewLayerInt.session = captureSession
+            } else {
+                previewLayerInt = AVCaptureVideoPreviewLayer.init(session: captureSession)
+                self.previewLayer = previewLayerInt
+            }
+    
             previewLayerInt.videoGravity = AVLayerVideoGravity.resizeAspectFill
             previewLayerInt.frame = frame
             previewLayerInt.connection?.videoOrientation = AVCaptureVideoOrientation.portrait
             
-            self.view.layer.insertSublayer(previewLayerInt, at: 0)
+            self.view.layer.addSublayer(previewLayerInt)
             
             previewLayer = previewLayerInt
         }
         
-        captureSession?.startRunning()
+        DispatchQueue.main.async {
+            self.captureSession?.startRunning()
+        }
         
         return [
             "device": device,
@@ -112,5 +178,28 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             "previewLayer": previewLayer
         ]
     }
+    
+    var previewLayer: AVCaptureVideoPreviewLayer?
+    
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection)  {
+        let myPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
+        let myCIimage = CIImage(cvPixelBuffer: myPixelBuffer!)
+        let videoImage = UIImage(ciImage: myCIimage)
+        self.capturedImage = videoImage
+    }
+    
+    @IBAction func onSwitchTouched(_ sender: Any) {
+        switch self.state {
+        case .back:
+            self.state = .front
+        case .front:
+            self.state = .back
+        }
+        
+        self.reloadState()
+    }
+    
+    
 }
 
